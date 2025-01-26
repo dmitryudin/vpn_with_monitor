@@ -290,7 +290,7 @@ conn roadwarrior
   #esp=aes256gcm16-ecp384!
   ike=aes256gcm16-prfsha384-ecp384,aes256gcm16-prfsha256-ecp256,aes128gcm16-prfsha256-ecp256,aes256-sha256-modp2048!
   esp=aes256-sha256-modp2048-modpnone,aes256gcm16-ecp384,aes128gcm16-ecp256,aes256-sha256!
-  dpdaction=clear
+  dpdaction=restart
   dpddelay=900s
   rekey=no
   left=%any
