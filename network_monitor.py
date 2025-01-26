@@ -68,5 +68,5 @@ if __name__ == "__main__":
     interface_name = 'eth0'
     kafka_topic = 'network_usage'
     kafka_server = '109.196.101.63:9092'
-    interval_seconds = 5.0
+    interval_seconds = 30.0
     main(interface_name, kafka_topic, kafka_server, interval_seconds)

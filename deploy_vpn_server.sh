@@ -286,9 +286,10 @@ conn roadwarrior
 
   # https://docs.strongswan.org/docs/5.9/config/IKEv2CipherSuites.html#_commercial_national_security_algorithm_suite
   # ... but we also allow aes256gcm16-prfsha256-ecp256, because that's sometimes just what macOS proposes
-  ike=aes256gcm16-prfsha384-ecp384,aes256gcm16-prfsha256-ecp256!
-  esp=aes256gcm16-ecp384!
-
+  #ike=aes256gcm16-prfsha384-ecp384,aes256gcm16-prfsha256-ecp256!
+  #esp=aes256gcm16-ecp384!
+  ike=aes256gcm16-prfsha384-ecp384,aes256gcm16-prfsha256-ecp256,aes128gcm16-prfsha256-ecp256,aes256-sha256-modp2048!
+  esp=aes256-sha256-modp2048-modpnone,aes256gcm16-ecp384,aes128gcm16-ecp256,aes256-sha256!
   dpdaction=clear
   dpddelay=900s
   rekey=no
