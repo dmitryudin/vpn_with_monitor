@@ -3,6 +3,27 @@ import socket
 import time
 from kafka import KafkaProducer
 import json
+import subprocess
+
+def get_ipsec_connections():
+    try:
+        # Выполняем команду для получения статуса IPsec
+        result = subprocess.run(['ipsec', 'status'], capture_output=True, text=True, check=True)
+        output = result.stdout
+        
+        # Подсчитываем количество подключений
+        connections = output.splitlines()
+        connection_count = sum(1 for line in connections if "ESTABLISHED" in line)
+        print(connection_count)
+        return connection_count
+
+    except subprocess.CalledProcessError as e:
+        print(f"error: {e}")
+        return None
+
+
+
+
 
 def get_network_usage(interface):
     net_io = psutil.net_io_counters(pernic=True)
@@ -29,6 +50,7 @@ def main(interface, kafka_topic, kafka_server, interval):
 
     try:
         while True:
+            count_of_users = get_ipsec_connections()
             net_usage = get_network_usage(interface)
             if net_usage:
                 bytes_sent = net_usage.bytes_sent
@@ -44,6 +66,7 @@ def main(interface, kafka_topic, kafka_server, interval):
                 
                 # Создаем сообщение
                 message = {
+                    'count_of_users': count_of_users,
                     'ip_address': ip_address,
                     'speed_sent_mbps': speed_sent_mbps,
                     'speed_recv_mbps': speed_recv_mbps
