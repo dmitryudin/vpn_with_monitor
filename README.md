@@ -3,9 +3,14 @@
 - network_monitor.py - монитор загруженности сетевого интрфейса, отпраляет все данные в кафку
 - network_monitor.service - сервис, запускающий монитор через start.sh
 
+Настойки учетных записей пользователей:
+/etc/ipsec.secrets
 
-Насторойки конфигурационного файла:
-'''
+Перезапуск ipsec:
+ipsec restart
+
+Насторойки конфигурационного файла /etc/ipsec.conf:
+```
 config setup
   strictcrlpolicy=yes
   uniqueids=never
@@ -39,4 +44,4 @@ conn roadwarrior
   rightdns=${VPNDNS}
   rightsourceip=${VPNIPPOOL}
   rightsendcert=never
-'''
+```
