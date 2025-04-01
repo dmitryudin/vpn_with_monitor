@@ -5,6 +5,7 @@
 
 
 Насторойки конфигурационного файла:
+'''
 config setup
   strictcrlpolicy=yes
   uniqueids=never
@@ -38,3 +39,4 @@ conn roadwarrior
   rightdns=${VPNDNS}
   rightsourceip=${VPNIPPOOL}
   rightsendcert=never
+'''
