@@ -4,17 +4,30 @@ from pathlib import Path
 from confluent_kafka import Consumer, Producer
 import json
 import threading
+import socket
+from dotenv import load_dotenv
+import os
+import time
+load_dotenv()
+
+MY_TOPIC = os.getenv("MY_TOPIC")
+
+
+KAFKA_HOST = os.getenv("KAFKA_HOST")
+KAFKA_PORT = os.getenv("KAFKA_PORT")
+
+
 
 class VPNUserManager:
-    def __init__(self, config_file='/etc/ipsec.conf'):
+    def __init__(self, config_file='/etc/ipsec.secrets'):
+        
         self.config_file = Path(config_file)
         self.kafka_config = {
-            'bootstrap.servers': 'kafka-broker:9092',
+            'bootstrap.servers': f'{KAFKA_HOST}:{KAFKA_PORT}',
             'group.id': 'vpn-user-manager',
             'auto.offset.reset': 'earliest'
         }
-        self.topic_commands = 'vpn-user-commands'
-        self.topic_events = 'vpn-user-events'
+        self.topic_commands = f'{MY_TOPIC}'
 
     def execute_ipsec_command(self):
         """Обновляет IPsec secrets"""
@@ -78,7 +91,7 @@ class VPNUserManager:
         self._send_kafka_event("user_removed", f"Removed user {username}")
         return True
 
-   def process_kafka_commands(self):
+    def process_kafka_commands(self):
         """Обрабатывает команды из Kafka с отправкой подтверждений"""
         consumer = Consumer({
             **self.kafka_config,
@@ -91,7 +104,9 @@ class VPNUserManager:
             if not msg:
                 continue
 
+            command = None  # Инициализируем переменную заранее
             try:
+                print(msg.value())
                 command = json.loads(msg.value())
                 reply_to = command.get('reply_to')
                 corr_id = command.get('correlation_id')
@@ -103,7 +118,7 @@ class VPNUserManager:
                     result = self.remove_user(command['username'])
                 else:
                     self._send_kafka_event(
-                        reply_to,
+                        reply_to or 'vpn-errors',
                         {'status': 'failed', 'error': 'Invalid action', 'correlation_id': corr_id}
                     )
                     continue
@@ -122,15 +137,18 @@ class VPNUserManager:
                 # Подтверждаем обработку сообщения
                 consumer.commit(message=msg)
 
+            except json.JSONDecodeError as e:
+                error_msg = {'status': 'failed', 'error': f'Invalid JSON: {str(e)}'}
+                self._send_kafka_event('vpn-errors', error_msg)
             except Exception as e:
-                self._send_kafka_event(
-                    command.get('reply_to', 'vpn-errors'),
-                    {
-                        'status': 'failed',
-                        'error': str(e),
-                        'correlation_id': command.get('correlation_id', 'unknown')
-                    }
-                )
+                error_data = {
+                    'status': 'failed',
+                    'error': str(e),
+                    'correlation_id': command.get('correlation_id', 'unknown') if command else 'unknown',
+                    'original_message': msg.value().decode('utf-8') if msg else None
+                }
+                self._send_kafka_event(command.get('reply_to', 'vpn-errors') if command else 'vpn-errors', error_data)
+
 
     def start(self):
         """Запускает обработчик команд Kafka в отдельном потоке"""
@@ -143,9 +161,9 @@ if __name__ == "__main__":
     manager.start()
     
     # Демонстрация - в реальном коде это будет через Kafka
-    manager.add_user("test_user", "test123")
-    manager.remove_user("test_user")
+    # manager.add_user("test_user", "test123")
+    # manager.remove_user("test_user")
     
     # Оставить процесс активным
     while True:
-        pass
+        time.sleep(1)

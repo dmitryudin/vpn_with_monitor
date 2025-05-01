@@ -89,9 +89,19 @@ def main(interface, kafka_topic, kafka_server, interval):
         producer.close()
 
 if __name__ == "__main__":
+    
+    from dotenv import load_dotenv
+    import os
+    load_dotenv()
+    KAFKA_HOST = os.getenv("KAFKA_HOST")
+    KAFKA_PORT = os.getenv("KAFKA_PORT")
     while True:
-        interface_name = 'eth0'
-        kafka_topic = 'network_usage'
-        kafka_server = '109.73.202.105:9092'
-        interval_seconds = 10
-        main(interface_name, kafka_topic, kafka_server, interval_seconds)
+        try:
+            interface_name = 'eth0'
+            kafka_topic = 'network_usage'
+            kafka_server = f'{KAFKA_HOST}:{KAFKA_PORT}'
+            interval_seconds = 10
+            main(interface_name, kafka_topic, kafka_server, interval_seconds)
+        except:
+            print('no brokers availible')
+            time.sleep(3)

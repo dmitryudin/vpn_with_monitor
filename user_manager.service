@@ -1,0 +1,9 @@
+[Unit]
+Description=network_monitor
+After=network.target
+[Service]
+Type=oneshot
+User=root
+ExecStart=/home/vpn/vpn_with_monitor/start_user_manager.sh
+[Install]
+WantedBy=multi-user.target
