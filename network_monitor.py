@@ -52,6 +52,7 @@ def main(interface, kafka_topic, kafka_server, interval):
         while True:
             count_of_users = get_ipsec_connections()
             net_usage = get_network_usage(interface)
+            print('net_usage', net_usage)
             if net_usage:
                 bytes_sent = net_usage.bytes_sent
                 bytes_recv = net_usage.bytes_recv
@@ -88,8 +89,9 @@ def main(interface, kafka_topic, kafka_server, interval):
         producer.close()
 
 if __name__ == "__main__":
-    interface_name = 'eth0'
-    kafka_topic = 'network_usage'
-    kafka_server = '109.196.101.63:9092'
-    interval_seconds = 60.0*5
-    main(interface_name, kafka_topic, kafka_server, interval_seconds)
+    while True:
+        interface_name = 'eth0'
+        kafka_topic = 'network_usage'
+        kafka_server = '109.73.202.105:9092'
+        interval_seconds = 10
+        main(interface_name, kafka_topic, kafka_server, interval_seconds)

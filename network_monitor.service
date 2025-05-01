@@ -4,6 +4,6 @@ After=network.target
 [Service]
 Type=oneshot
 User=root
-ExecStart=/root/deploy/start.sh
+ExecStart=/home/vpn/vpn_with_monitor/start.sh
 [Install]
 WantedBy=multi-user.target
