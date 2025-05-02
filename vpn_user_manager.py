@@ -16,6 +16,15 @@ MY_TOPIC = os.getenv("MY_TOPIC")
 KAFKA_HOST = os.getenv("KAFKA_HOST")
 KAFKA_PORT = os.getenv("KAFKA_PORT")
 
+from enum import Enum
+
+class VPNUserManagerStatus(Enum):
+    CONFLICT = 0
+    USER_NOT_FOUND = 1
+    SERVER_NOT_RESPONCE=2
+    INVALID_CONFIG_FILE = 3
+    INVALID_ACTION= 4
+    UNEXPECTED_ERROR = 5
 
 
 class VPNUserManager:
@@ -39,7 +48,7 @@ class VPNUserManager:
 
     def _send_kafka_event(self, topic: str, data: dict):
         """Универсальный метод отправки сообщений"""
-        producer = Producer(self.kafka_config)
+        producer = Producer({'bootstrap.servers': f'{KAFKA_HOST}:{KAFKA_PORT}'})
         try:
             producer.produce(
                 topic=topic,
@@ -47,12 +56,13 @@ class VPNUserManager:
                 callback=lambda err, _: print(f"Delivery failed: {err}") if err else None
             )
             producer.flush()
+            print(f'sended data {data}')
         except Exception as e:
             print(f"Failed to send message to {topic}: {e}")
         finally:
             producer.poll(0)
 
-    def add_user(self, username: str, password: str):
+    def add_user(self, username: str, password: str, corr_id:str,  reply_to: str):
         """Добавляет пользователя в конфиг"""
         if not self.config_file.exists():
             self.config_file.touch()
@@ -60,19 +70,19 @@ class VPNUserManager:
         with open(self.config_file, 'r+') as f:
             content = f.read()
             if re.search(rf'^{username} : EAP ".+"$', content, re.MULTILINE):
-                self._send_kafka_event("warning", f"User {username} already exists")
+                self._send_kafka_event(topic=reply_to, data={'status': 'failed', 'error': 'conflict', 'correlation_id': corr_id})
                 return False
 
             f.write(f'\n{username} : EAP "{password}"')
         
         self.execute_ipsec_command()
-        self._send_kafka_event("user_added", f"Added user {username}")
+        self._send_kafka_event(topic=reply_to, data={'status': 'success', 'error': '', 'correlation_id': corr_id})
         return True
 
-    def remove_user(self, username: str):
+    def remove_user(self, username: str, corr_id: str, reply_to: str):
         """Удаляет пользователя из конфига"""
         if not self.config_file.exists():
-            self._send_kafka_event("error", "Config file not found")
+            self._send_kafka_event(topic=reply_to, data={'status': 'failed', 'error': 'invalid_config_file', 'correlation_id': corr_id})
             return False
 
         with open(self.config_file, 'r') as f:
@@ -81,14 +91,14 @@ class VPNUserManager:
         new_lines = [line for line in lines if not line.strip().startswith(f'{username} : EAP ')]
 
         if len(new_lines) == len(lines):
-            self._send_kafka_event("warning", f"User {username} not found")
+            self._send_kafka_event(topic=reply_to, data={'status': 'failed', 'error': 'not_found', 'correlation_id': corr_id})
             return False
 
         with open(self.config_file, 'w') as f:
             f.writelines(new_lines)
 
         self.execute_ipsec_command()
-        self._send_kafka_event("user_removed", f"Removed user {username}")
+        self._send_kafka_event(topic=reply_to, data={'status': 'success', 'error': '', 'correlation_id': corr_id})
         return True
 
     def process_kafka_commands(self):
@@ -113,13 +123,13 @@ class VPNUserManager:
                 result = None
 
                 if command['action'] == 'add':
-                    result = self.add_user(command['username'], command['password'])
+                    result = self.add_user(command['username'], command['password'], corr_id=corr_id, reply_to=reply_to)
                 elif command['action'] == 'remove':
-                    result = self.remove_user(command['username'])
+                    result = self.remove_user(command['username'], corr_id=corr_id, reply_to=reply_to)
                 else:
                     self._send_kafka_event(
                         reply_to or 'vpn-errors',
-                        {'status': 'failed', 'error': 'Invalid action', 'correlation_id': corr_id}
+                        {'status': 'failed', 'error': 'invalid_action', 'correlation_id': corr_id}
                     )
                     continue
 
@@ -140,7 +150,9 @@ class VPNUserManager:
             except json.JSONDecodeError as e:
                 error_msg = {'status': 'failed', 'error': f'Invalid JSON: {str(e)}'}
                 self._send_kafka_event('vpn-errors', error_msg)
+                print('exeption ', e)
             except Exception as e:
+                print('exeption ', e)
                 error_data = {
                     'status': 'failed',
                     'error': str(e),
@@ -153,7 +165,8 @@ class VPNUserManager:
     def start(self):
         """Запускает обработчик команд Kafka в отдельном потоке"""
         threading.Thread(target=self.process_kafka_commands, daemon=True).start()
-        self._send_kafka_event("service_started", "VPN User Manager started")
+        print('service started')
+        # self._send_kafka_event("service_started", "VPN User Manager started")
 
 # Пример использования
 if __name__ == "__main__":
