@@ -1,89 +1,86 @@
-import re
-import subprocess
+
+
+
+from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pathlib import Path
-from confluent_kafka import Consumer, Producer
-import json
-import threading
-import socket
-from dotenv import load_dotenv
-import os
+import subprocess
+import re
 import time
-load_dotenv()
+from typing import Optional
+import logging
+import os
 
-MY_TOPIC = os.getenv("MY_TOPIC")
+app = FastAPI()
+security = HTTPBasic()
+logger = logging.getLogger(__name__)
 
-
-KAFKA_HOST = os.getenv("KAFKA_HOST")
-KAFKA_PORT = os.getenv("KAFKA_PORT")
-
-from enum import Enum
-
-class VPNUserManagerStatus(Enum):
-    CONFLICT = 0
-    USER_NOT_FOUND = 1
-    SERVER_NOT_RESPONCE=2
-    INVALID_CONFIG_FILE = 3
-    INVALID_ACTION= 4
-    UNEXPECTED_ERROR = 5
-
+# Конфигурация
+CONFIG_FILE = os.getenv('IPSEC_CONFIG', '/etc/ipsec.secrets')
+ADMIN_USERNAME = os.getenv('ADMIN_USER', 'admin')
+ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'securepassword')
 
 class VPNUserManager:
-    def __init__(self, config_file='/etc/ipsec.secrets'):
-        
+    def __init__(self, config_file=CONFIG_FILE):
         self.config_file = Path(config_file)
-        self.kafka_config = {
-            'bootstrap.servers': f'{KAFKA_HOST}:{KAFKA_PORT}',
-            'group.id': 'vpn-user-manager',
-            'auto.offset.reset': 'earliest'
-        }
-        self.topic_commands = f'{MY_TOPIC}'
-
+        
     def execute_ipsec_command(self):
         """Обновляет IPsec secrets"""
         try:
-            subprocess.run(['sudo', 'ipsec', 'secrets'], check=True)
-            self._send_kafka_event("ipsec_updated", "IPsec secrets reloaded")
-        except subprocess.CalledProcessError as e:
-            self._send_kafka_event("error", f"IPsec update failed: {e}")
-
-    def _send_kafka_event(self, topic: str, data: dict):
-        """Универсальный метод отправки сообщений"""
-        producer = Producer({'bootstrap.servers': f'{KAFKA_HOST}:{KAFKA_PORT}'})
-        try:
-            producer.produce(
-                topic=topic,
-                value=json.dumps(data).encode('utf-8'),
-                callback=lambda err, _: print(f"Delivery failed: {err}") if err else None
+            result = subprocess.run(
+                ['sudo', 'ipsec', 'secrets'], 
+                check=True,
+                capture_output=True,
+                text=True
             )
-            producer.flush()
-            print(f'sended data {data}')
-        except Exception as e:
-            print(f"Failed to send message to {topic}: {e}")
-        finally:
-            producer.poll(0)
+            logger.info("IPsec secrets reloaded: %s", result.stdout)
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.error("IPsec update failed: %s", e.stderr)
+            return False
 
-    def add_user(self, username: str, password: str, corr_id:str,  reply_to: str):
+    def _validate_credentials(self, credentials: HTTPBasicCredentials = Depends(security)):
+        """Проверка Basic Auth"""
+        correct_username = credentials.username == ADMIN_USERNAME
+        correct_password = credentials.password == ADMIN_PASSWORD
+        
+        if not (correct_username and correct_password):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect email or password",
+                headers={"WWW-Authenticate": "Basic"},
+            )
+        return credentials.username
+
+    def add_user(self, username: str, password: str):
         """Добавляет пользователя в конфиг"""
         if not self.config_file.exists():
-            self.config_file.touch()
+            self.config_file.touch(mode=0o600)
 
         with open(self.config_file, 'r+') as f:
             content = f.read()
             if re.search(rf'^{username} : EAP ".+"$', content, re.MULTILINE):
-                self._send_kafka_event(topic=reply_to, data={'status': 'failed', 'error': 'conflict', 'correlation_id': corr_id})
-                return False
+                raise HTTPException(
+                    status_code=409,
+                    detail="User already exists"
+                )
 
             f.write(f'\n{username} : EAP "{password}"')
         
-        self.execute_ipsec_command()
-        self._send_kafka_event(topic=reply_to, data={'status': 'success', 'error': '', 'correlation_id': corr_id})
-        return True
+        if not self.execute_ipsec_command():
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to reload IPsec configuration"
+            )
+        return {"status": "success", "username": username}
 
-    def remove_user(self, username: str, corr_id: str, reply_to: str):
+    def remove_user(self, username: str):
         """Удаляет пользователя из конфига"""
         if not self.config_file.exists():
-            self._send_kafka_event(topic=reply_to, data={'status': 'failed', 'error': 'invalid_config_file', 'correlation_id': corr_id})
-            return False
+            raise HTTPException(
+                status_code=500,
+                detail="IPsec config file not found"
+            )
 
         with open(self.config_file, 'r') as f:
             lines = f.readlines()
@@ -91,92 +88,83 @@ class VPNUserManager:
         new_lines = [line for line in lines if not line.strip().startswith(f'{username} : EAP ')]
 
         if len(new_lines) == len(lines):
-            self._send_kafka_event(topic=reply_to, data={'status': 'failed', 'error': 'not_found', 'correlation_id': corr_id})
-            return False
+            raise HTTPException(
+                status_code=404,
+                detail="User not found"
+            )
 
         with open(self.config_file, 'w') as f:
             f.writelines(new_lines)
 
-        self.execute_ipsec_command()
-        self._send_kafka_event(topic=reply_to, data={'status': 'success', 'error': '', 'correlation_id': corr_id})
-        return True
+        if not self.execute_ipsec_command():
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to reload IPsec configuration"
+            )
+        return {"status": "success", "username": username}
+    def sync_users(self, valid_usernames: list):
+        """Удаляет пользователей, отсутствующих в valid_usernames"""
+        if not self.config_file.exists():
+            raise HTTPException(
+                status_code=500,
+                detail="IPsec config file not found"
+            )
 
-    def process_kafka_commands(self):
-        """Обрабатывает команды из Kafka с отправкой подтверждений"""
-        consumer = Consumer({
-            **self.kafka_config,
-            'enable.auto.commit': False  # Ручное подтверждение
-        })
-        consumer.subscribe([self.topic_commands])
+        # Читаем текущих пользователей из файла
+        with open(self.config_file, 'r') as f:
+            content = f.read()
+        
+        # Ищем всех пользователей в формате 'username : EAP "password"'
+        existing_users = re.findall(r'^(\w+) : EAP ".+"$', content, re.MULTILINE)
+        
+        # Определяем пользователей для удаления
+        users_to_remove = [user for user in existing_users if user not in valid_usernames]
+        
+        # Удаляем пользователей
+        for username in users_to_remove:
+            self.remove_user(username)
+        
+        return {
+            "status": "success",
+            "removed_users": users_to_remove,
+            "total_removed": len(users_to_remove)
+        }
 
-        while True:
-            msg = consumer.poll(1.0)
-            if not msg:
-                continue
+# Инициализация менеджера
+manager = VPNUserManager()
 
-            command = None  # Инициализируем переменную заранее
-            try:
-                print(msg.value())
-                command = json.loads(msg.value())
-                reply_to = command.get('reply_to')
-                corr_id = command.get('correlation_id')
-                result = None
+# Эндпоинты FastAPI
+@app.post("/users/")
+def add_user(
+    username: str,
+    password: str,
+    auth: HTTPBasicCredentials = Depends(manager._validate_credentials)
+):
+    """Добавление пользователя VPN"""
+    return manager.add_user(username, password)
 
-                if command['action'] == 'add':
-                    result = self.add_user(command['username'], command['password'], corr_id=corr_id, reply_to=reply_to)
-                elif command['action'] == 'remove':
-                    result = self.remove_user(command['username'], corr_id=corr_id, reply_to=reply_to)
-                else:
-                    self._send_kafka_event(
-                        reply_to or 'vpn-errors',
-                        {'status': 'failed', 'error': 'invalid_action', 'correlation_id': corr_id}
-                    )
-                    continue
+@app.delete("/users/{username}")
+def remove_user(
+    username: str,
+    auth: HTTPBasicCredentials = Depends(manager._validate_credentials)
+):
+    """Удаление пользователя VPN"""
+    return manager.remove_user(username)
 
-                # Отправляем подтверждение
-                if reply_to:
-                    self._send_kafka_event(
-                        reply_to,
-                        {
-                            'status': 'success' if result else 'failed',
-                            'correlation_id': corr_id,
-                            'processed_at': int(time.time() * 1000)
-                        }
-                    )
+@app.get("/health")
+def health_check():
+    """Проверка статуса сервиса"""
+    return {"status": "ok", "timestamp": int(time.time())}
 
-                # Подтверждаем обработку сообщения
-                consumer.commit(message=msg)
+# Добавить эндпоинт в FastAPI
+@app.post("/users/sync")
+def sync_users(
+    usernames: list[str],
+    auth: HTTPBasicCredentials = Depends(manager._validate_credentials)
+):
+    """Синхронизирует пользователей с предоставленным списком"""
+    return manager.sync_users(usernames)
 
-            except json.JSONDecodeError as e:
-                error_msg = {'status': 'failed', 'error': f'Invalid JSON: {str(e)}'}
-                self._send_kafka_event('vpn-errors', error_msg)
-                print('exeption ', e)
-            except Exception as e:
-                print('exeption ', e)
-                error_data = {
-                    'status': 'failed',
-                    'error': str(e),
-                    'correlation_id': command.get('correlation_id', 'unknown') if command else 'unknown',
-                    'original_message': msg.value().decode('utf-8') if msg else None
-                }
-                self._send_kafka_event(command.get('reply_to', 'vpn-errors') if command else 'vpn-errors', error_data)
-
-
-    def start(self):
-        """Запускает обработчик команд Kafka в отдельном потоке"""
-        threading.Thread(target=self.process_kafka_commands, daemon=True).start()
-        print('service started')
-        # self._send_kafka_event("service_started", "VPN User Manager started")
-
-# Пример использования
 if __name__ == "__main__":
-    manager = VPNUserManager()
-    manager.start()
-    
-    # Демонстрация - в реальном коде это будет через Kafka
-    # manager.add_user("test_user", "test123")
-    # manager.remove_user("test_user")
-    
-    # Оставить процесс активным
-    while True:
-        time.sleep(1)
+    import uvicorn
+    uvicorn.run(app, host="185.207.67.215", port=8080)
